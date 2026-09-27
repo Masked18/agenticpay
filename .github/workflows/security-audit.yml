@@ -62,34 +62,37 @@ jobs:
             --exclude-low \
             --solc-remaps "" || true
 
-          # Convert to human-readable format
+          # Generate a human-readable Markdown checklist
           slither . \
             --exclude-dependencies \
             --exclude-low \
-            --risk high,medium \
-            --output-to-file {severity}-{type}-slither-report.md
+            --checklist \
+            --markdown-root . \
+            2>&1 > slither-checklist.md || true
 
       - name: Parse Slither Results
         id: parse_slither
         working-directory: contracts
         run: |
-          if [ -f "HIGH-high-slither-report.md" ]; then
-            echo "slither_high_findings=true" >> $GITHUB_OUTPUT
-            echo "## 🔴 Slither: Critical Findings Found" >> $GITHUB_STEP_SUMMARY
-            cat HIGH-high-slither-report.md >> $GITHUB_STEP_SUMMARY
-          fi
+          if [ -f "slither-checklist.md" ]; then
+            # Check for high severity in the checklist output
+            if grep -qi "high" slither-checklist.md; then
+              echo "slither_high_findings=true" >> $GITHUB_OUTPUT
+              echo "## 🔴 Slither: Critical Findings Found" >> $GITHUB_STEP_SUMMARY
+              cat slither-checklist.md >> $GITHUB_STEP_SUMMARY
+            fi
 
-          if [ -f "MEDIUM-medium-slither-report.md" ]; then
-            echo "slither_medium_findings=true" >> $GITHUB_OUTPUT
-            echo "## 🟠 Slither: Medium-Risk Findings" >> $GITHUB_STEP_SUMMARY
-            cat MEDIUM-medium-slither-report.md >> $GITHUB_STEP_SUMMARY
+            if grep -qi "medium" slither-checklist.md; then
+              echo "slither_medium_findings=true" >> $GITHUB_OUTPUT
+              echo "## 🟠 Slither: Medium-Risk Findings" >> $GITHUB_STEP_SUMMARY
+            fi
           fi
 
       - name: Move Slither reports
         if: always()
         working-directory: contracts
         run: |
-          mv -f *slither-report.md ${{ github.workspace }}/${{ env.SECURITY_REPORT_DIR }}/ || true
+          mv -f slither-checklist.md ${{ github.workspace }}/${{ env.SECURITY_REPORT_DIR }}/slither-checklist.md || true
           mv -f ${{ runner.temp }}/slither-report.json ${{ github.workspace }}/${{ env.SECURITY_REPORT_DIR }}/ || true
 
       - name: Upload Slither Artifacts
@@ -169,7 +172,8 @@ jobs:
           for file in mythril-*.json; do
             if [ -f "$file" ]; then
               # Count issues by severity
-              CRITICAL=$((CRITICAL + $(jq '[.issues[] | select(.severity=="High")] | length' "$file" 2>/dev/null || echo 0)))
+              FILE_CRITICAL=$(jq '[.issues[] | select(.severity=="High")] | length' "$file" 2>/dev/null || echo 0)
+              CRITICAL_COUNT=$((CRITICAL_COUNT + FILE_CRITICAL))
             fi
           done
           

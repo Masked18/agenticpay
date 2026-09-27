@@ -40,15 +40,12 @@ jobs:
           NEXT_PUBLIC_VERCEL_ENV: preview
           NODE_ENV: production
 
-      - name: Export static build for LHCI
-        run: npx next export -o out
-        working-directory: frontend
-        continue-on-error: true
-
       - name: Start preview server
+        # next export was removed in Next.js 14; use `next start` against the
+        # production build instead.
         run: |
-          npx serve out -l 3000 &
-          sleep 3
+          npx next start -p 3000 &
+          sleep 5
           echo "Server ready"
         working-directory: frontend
         continue-on-error: true
@@ -165,11 +162,15 @@ jobs:
           fi
 
       - name: Block PR on budget exceeded
-        if: steps.bundle-check.outputs.js_size > 500 || steps.bundle-check.outputs.css_size > 200
         run: |
-          echo "::error::Bundle size budget exceeded. JS: ${{ steps.bundle-check.outputs.js_size }}KB, CSS: ${{ steps.bundle-check.outputs.css_size }}KB"
-          echo "To override: add label 'performance-override' to this PR"
-          exit 1
+          JS_SIZE="${{ steps.bundle-check.outputs.js_size }}"
+          CSS_SIZE="${{ steps.bundle-check.outputs.css_size }}"
+          if [ "${JS_SIZE}" -gt 500 ] || [ "${CSS_SIZE}" -gt 200 ]; then
+            echo "::error::Bundle size budget exceeded. JS: ${JS_SIZE}KB, CSS: ${CSS_SIZE}KB"
+            echo "To override: add label 'performance-override' to this PR"
+            exit 1
+          fi
+          echo "✅ Bundle size within budget (JS: ${JS_SIZE}KB, CSS: ${CSS_SIZE}KB)"
 
   performance-trend:
     name: Performance Trend

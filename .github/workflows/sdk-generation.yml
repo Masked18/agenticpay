@@ -77,7 +77,7 @@ jobs:
           path: backend/docs/api/openapi/
 
       - name: Install oasdiff
-        run: npm install -g @openapi-diff/openapi-diff
+        run: npm install -g @oasdiff/oasdiff
 
       - name: Fetch previous OpenAPI spec
         run: |
