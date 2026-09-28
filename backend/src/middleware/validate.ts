@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodSchema, ZodError, ZodIssue } from 'zod';
-import { AppError } from './errorHandler.js';
 
 export interface ValidationTargets {
   body?: ZodSchema;
@@ -34,7 +33,11 @@ export const validateRequest = (targets: ValidationTargets) => {
       next();
     } catch (error) {
       if (error instanceof ZodError) {
-        return next(new AppError(400, 'Request validation failed', 'ERR_VALIDATION_FAILED', formatIssues(error.errors)));
+        return res.status(400).json({
+          error: 'VALIDATION_FAILED',
+          message: 'Request validation failed',
+          details: formatIssues(error.errors),
+        });
       }
       next(error);
     }

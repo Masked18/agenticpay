@@ -18,15 +18,19 @@ export interface StartedContainer {
 }
 
 export async function startTestContainer(
-  _options: TestContainerOptions
+  options: TestContainerOptions
 ): Promise<StartedContainer> {
-  // Fallback mock – real implementation requires `testcontainers` package and Docker.
-  // Integration tests that need a real container should ensure testcontainers is installed.
-  return {
-    getHost: () => 'localhost',
-    getMappedPort: (p: number) => p,
-    stop: async () => {},
-  };
+  const { GenericContainer } = await import('testcontainers');
+  let container = new GenericContainer(options.image);
+
+  if (options.ports?.length) {
+    container = container.withExposedPorts(...options.ports);
+  }
+  if (options.env) {
+    container = container.withEnvironment(options.env);
+  }
+
+  return (await container.start()) as unknown as StartedContainer;
 }
 
 export async function stopTestContainer(container: StartedContainer): Promise<void> {

@@ -7,6 +7,10 @@ import { EmailChannel } from "./channels/email-channel";
 import { SlackChannel } from "./channels/slack-channel";
 import { InAppChannel } from "./channels/in-app-channel";
 import { WebhookChannel } from "./channels/webhook-channel";
+import { PagerDutyChannel } from "./channels/pagerduty-channel";
+import { DatadogChannel } from "./channels/datadog-channel";
+import { ZapierChannel } from "./channels/zapier-channel.js";
+import { IntercomChannel } from "./channels/intercom-channel.js";
 
 export class ChannelRegistry {
   private channels = new Map<string, NotificationChannel>();
@@ -59,6 +63,53 @@ export class ChannelRegistry {
         timeout: 10000,
       });
       this.register(webhookChannel);
+    }
+
+    // PagerDuty channel
+    if (process.env.PAGERDUTY_ROUTING_KEY) {
+      const pagerDutyChannel = new PagerDutyChannel({
+        routingKey: process.env.PAGERDUTY_ROUTING_KEY,
+        apiUrl: process.env.PAGERDUTY_API_URL,
+        maxPerHour: 30,
+        maxPerDay: 200,
+      });
+      this.register(pagerDutyChannel);
+    }
+
+    // Datadog channel
+    if (process.env.DATADOG_API_KEY) {
+      const datadogChannel = new DatadogChannel({
+        apiKey: process.env.DATADOG_API_KEY,
+        site: process.env.DATADOG_SITE,
+        service: process.env.DATADOG_SERVICE_NAME,
+        maxPerHour: 100,
+        maxPerDay: 1000,
+      });
+      this.register(datadogChannel);
+    }
+
+    // Zapier channel
+    if (process.env.ZAPIER_WEBHOOK_URL) {
+      const zapierChannel = new ZapierChannel({
+        webhookUrl: process.env.ZAPIER_WEBHOOK_URL,
+        secret: process.env.ZAPIER_WEBHOOK_SECRET,
+        maxPerHour: 100,
+        maxPerDay: 1000,
+      });
+      this.register(zapierChannel);
+    }
+
+    // Intercom channel
+    if (process.env.INTERCOM_ACCESS_TOKEN) {
+      const intercomChannel = new IntercomChannel({
+        accessToken: process.env.INTERCOM_ACCESS_TOKEN,
+        appId: process.env.INTERCOM_APP_ID,
+        adminId: process.env.INTERCOM_ADMIN_ID,
+        apiUrl: process.env.INTERCOM_API_URL,
+        maxPerHour: 50,
+        maxPerDay: 500,
+      });
+      this.register(intercomChannel);
     }
   }
 

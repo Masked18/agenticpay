@@ -9,8 +9,9 @@ This guide explains the comprehensive performance monitoring and optimization sy
 3. [Cursor-Based Pagination](#cursor-based-pagination)
 4. [Database Connection Pooling](#database-connection-pooling)
 5. [Redis Caching Layer](#redis-caching-layer)
-6. [Monitoring Dashboard](#monitoring-dashboard)
-7. [Performance Budgets](#performance-budgets)
+6. [API Response Caching with ETags](#api-response-caching-with-etags)
+7. [Monitoring Dashboard](#monitoring-dashboard)
+8. [Performance Budgets](#performance-budgets)
 
 ---
 
@@ -65,13 +66,12 @@ Reduces payload size by 60-80% on average, improving:
 
 ### Compression Methods
 
-1. **Brotli** (preferred): 20-30% smaller than gzip
-   - Quality level: 5 (balanced speed/compression)
-   - Mode: Text optimization
+AgenticPay uses the maintained Express `compression` middleware with streaming
+backpressure support, negotiated encodings, and route-level filters.
 
-2. **Gzip** (fallback): Universal support
-   - Compression level: 6
-   - Minimum size threshold: 1KB
+- Compression level: 6
+- Minimum size threshold: 1KB by default
+- Skips images, audio, video, archives, and already-compressed content
 
 ### Implementation
 
@@ -79,8 +79,7 @@ Located in: `backend/src/middleware/compression.ts`
 
 ```typescript
 app.use(compressionMiddleware({
-  brotliLevel: 5,
-  gzipLevel: 6,
+  level: 6,
   minSizeBytes: 1024,
 }));
 ```
@@ -90,7 +89,7 @@ app.use(compressionMiddleware({
 Access compression metrics via:
 
 ```
-GET /api/v1/monitoring/pool/compression
+GET /api/v1/monitoring/compression
 ```
 
 Returns:
@@ -105,6 +104,35 @@ Returns:
   "gzipRequests": 350
 }
 ```
+
+---
+
+## API Response Streaming
+
+Large exports are streamed with chunked transfer encoding instead of being buffered in memory.
+
+Endpoints:
+
+```bash
+GET /api/v1/exports/audit/stream?format=csv&limit=100000
+GET /api/v1/exports/audit/stream?format=jsonl&batchSize=1000
+GET /api/v1/exports/payments/stream?format=csv
+```
+
+Reusable helpers live in `backend/src/middleware/streaming.ts`:
+
+```typescript
+const query = parseStreamingQuery(req.query);
+await streamDataset({
+  req,
+  res,
+  items: takeStreamItems(fetchRows(), query.limit),
+  format: query.format,
+});
+```
+
+The streaming helpers set `Transfer-Encoding: chunked`, disable proxy buffering with
+`X-Accel-Buffering: no`, honor HTTP backpressure, and track completed, aborted, and failed streams.
 
 ---
 
@@ -198,6 +226,40 @@ GET /api/v1/payments -H "If-None-Match: abc123def456"
 
 Optimized connection pooling with PgBouncer for efficient resource utilization:
 
+### Read Replicas and Failover
+
+Read replica routing is configured with:
+
+```bash
+DB_READ_REPLICA_URLS=postgresql://user:pass@replica-a:5432/agenticpay,postgresql://user:pass@replica-b:5432/agenticpay
+DB_REPLICA_MAX_LAG_MS=5000
+DB_REPLICA_HEALTH_CHECK_INTERVAL_MS=30000
+DB_REPLICA_FAILOVER_COOLDOWN_MS=15000
+```
+
+`backend/src/config/database.ts` exposes `ReadReplicaRouter`, which routes `SELECT` and `WITH`
+queries across healthy replicas and falls back to `DATABASE_URL` when no replica is available or
+replica lag exceeds the configured threshold. Terraform can provision replicas with
+`db_read_replica_count` and wires `DB_READ_REPLICA_URLS` into the backend service.
+
+### WebSocket Pooling
+
+WebSocket connections are managed by `backend/src/websocket/pool.ts`. The pool enforces capacity,
+tracks active and queued connections, batches outbound messages through `ManagedConnection`, and
+supports clean shutdown. Tune batching with:
+
+```typescript
+attachWebSocketServer({
+  server,
+  options: {
+    maxConnections: 250,
+    maxQueueSizePerConnection: 500,
+    flushIntervalMs: 25,
+    maxBatchSize: 50,
+  },
+});
+```
+
 **Benefits:**
 - Prevents connection exhaustion
 - Detects and prevents connection leaks
@@ -239,7 +301,7 @@ Located in: `backend/src/config/database.ts`
 Access pool health via:
 
 ```
-GET /api/v1/monitoring/pool/health
+GET /api/v1/monitoring/health
 ```
 
 Returns:
@@ -261,7 +323,7 @@ Returns:
 Automatic detection of connection leaks:
 
 ```
-GET /api/v1/monitoring/pool/leaks
+GET /api/v1/monitoring/leaks
 ```
 
 - Monitors connection acquisition/release
@@ -271,7 +333,7 @@ GET /api/v1/monitoring/pool/leaks
 ### Metrics Endpoint
 
 ```
-GET /api/v1/monitoring/pool/metrics
+GET /api/v1/monitoring/metrics
 ```
 
 Returns comprehensive pool statistics including:
@@ -358,7 +420,7 @@ cache.registerWarmer('dashboard:overview',
 ### Metrics Endpoint
 
 ```
-GET /api/v1/monitoring/pool/cache
+GET /api/v1/monitoring/cache
 ```
 
 Returns:
@@ -376,6 +438,63 @@ Returns:
 
 ---
 
+## API Response Caching with ETags
+
+### Overview
+
+Two middleware layers cut repeated work for read-heavy endpoints:
+
+1. **`etag()`** — hashes the response body and answers matching
+   `If-None-Match` headers with a `304 Not Modified`, so clients and CDNs can
+   skip re-downloading unchanged payloads.
+2. **`cacheControl()`** — emits cache headers and, with `inMemory: true`,
+   stores the body so subsequent requests are served straight from memory
+   without re-running the handler. Error responses are never cached, and
+   stale content can be served briefly behind a re-fetch
+   (`stale-while-revalidate`).
+
+### Implementation
+
+Located in: `backend/src/middleware/etag.ts` and `backend/src/middleware/cache.ts`
+
+```ts
+import { etag } from '@/middleware/etag';
+import { cacheControl, CacheTTL } from '@/middleware/cache';
+
+// Bandwidth savings without storage
+router.get('/api/v1/payments/:id', etag(), handler);
+
+// Serve stable catalog data from memory (Cache-Control + ETag + X-Cache)
+router.get('/api/v1/catalog', cacheControl({
+  maxAge: CacheTTL.STATIC,
+  inMemory: true,
+  staleWhileRevalidate: 60,
+}), handler);
+```
+
+### Response Semantics
+
+- `X-Cache: MISS/HIT/STALE` indicates whether the handler ran or a stored body
+  was served.
+- `If-None-Match` matches produce `304 Not Modified` (weak comparison).
+- `statusCode >= 400` responses always emit `Cache-Control: no-store` and are
+  never stored or tagged.
+- Mutations (POST/PUT/PATCH/DELETE) pass straight through without caching.
+
+### Warming & Invalidation
+
+`warmCache()` pre-loads hot keys on startup; `invalidateCache()` clears entries
+matching a glob against the internal `agenticpay:cache:` prefix.
+
+### Further Reading
+
+See [backend/docs/RESPONSE_CACHING.md](backend/docs/RESPONSE_CACHING.md) for the
+full API reference, `CacheTTL` presets, composition guidance, and benchmark
+results for the `cache_plain`, `cache_header_only`, `cache_memory_hit`, and
+`cache_etag_304` endpoints.
+
+---
+
 ## Monitoring Dashboard
 
 ### Performance Overview
@@ -383,7 +502,7 @@ Returns:
 Comprehensive view of all performance metrics:
 
 ```
-GET /api/v1/monitoring/pool/performance
+GET /api/v1/monitoring/performance
 ```
 
 Returns combined metrics:

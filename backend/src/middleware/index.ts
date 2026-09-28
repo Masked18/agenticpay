@@ -19,18 +19,3 @@ export { validate } from './validate.js';
 export { versionMiddleware } from './versioning.js';
 export { verifyWebhook, webhookVerifiers, rawBodyCapture, type WebhookVerificationConfig } from './webhookVerification.js';
 export { composeMiddleware, type MiddlewareFunction, type MiddlewareChain } from './compose.js';
-export { tokenAuthMiddleware } from './token-auth.js';
-export { hmacAuthMiddleware, invalidateKeyCache, HEADER_SIGNATURE, HEADER_TIMESTAMP, HEADER_NONCE } from './hmac-auth.js';
-export {
-  authMiddleware,
-  createAuthMiddleware,
-  DEFAULT_AUTH_STRATEGIES,
-  sessionStrategy,
-  hmacStrategy,
-  tokenStrategy,
-  apiKeyStrategy,
-  type AuthStrategy,
-  type AuthPrincipal,
-  type AuthMethod,
-} from './auth.js';
-export { requestCoalescer, getCoalesceMetrics, setCoalesceConfig, resetCoalesceStore } from './request-coalescer.js';

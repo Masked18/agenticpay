@@ -10,10 +10,17 @@ name: Auto-Scaling
 #   - Policies: scale-up on queue depth; scale-down via concurrency cancel + idle timeout
 
 on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    # Weekly scaling policy review + cost snapshot (pairs with cost-monitor.yml)
+    - cron: '30 8 * * 1'
   workflow_dispatch:
     inputs:
       scale_profile:
-        description: 'Scaling profile to apply'
+        description: 'Scaling profile (conservative | balanced | burst)'
         required: false
         default: 'balanced'
         type: choice
@@ -22,19 +29,18 @@ on:
           - balanced
           - burst
       min_parallel:
-        description: 'Override minimum parallel jobs (leave blank to use profile default)'
+        description: 'Minimum parallel matrix jobs (floor)'
         required: false
-        type: string
-        default: ''
+        default: '1'
       max_parallel:
-        description: 'Override maximum parallel jobs (leave blank to use profile default)'
+        description: 'Maximum parallel matrix jobs (ceiling)'
         required: false
-        type: string
-        default: ''
+        default: '4'
 
 concurrency:
   group: autoscaling-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 env:
   SERVICE: agenticpay
   # Scaling profiles — min/max parallel jobs per matrix
@@ -173,7 +179,7 @@ jobs:
 
       - name: Emit scaling metrics
         run: |
-          echo "::notice title=Shard::${{ matrix.shard }} of ${{ strategy.job-total }}"
+          echo "::notice title=Shard::${{ matrix.shard }}/${{ strategy.job-total }}"
           echo "::notice title=Max Parallel::${{ needs.resolve-scaling-policy.outputs.max_parallel }}"
 
   cost-monitor-hook:

@@ -5,12 +5,17 @@
  * at /dashboard/database.
  *
  * Routes:
- *   GET  /api/v1/database/stats          — Query profiler + middleware stats
- *   GET  /api/v1/database/index-stats     — pg_stat_user_indexes snapshot
- *   GET  /api/v1/database/index-recommendations — Index recommendations
- *   GET  /api/v1/database/query-plans     — EXPLAIN ANALYZE for hot queries
- *   GET  /api/v1/database/alerts          — Database performance alerts
- *   GET  /api/v1/database/table-scans     — pg_stat_user_tables snapshot
+ *   GET  /api/v1/database/stats               — Query profiler + middleware stats
+ *   GET  /api/v1/database/index-stats          — pg_stat_user_indexes snapshot
+ *   GET  /api/v1/database/index-recommendations— Index recommendations
+ *   GET  /api/v1/database/query-plans          — EXPLAIN ANALYZE for hot queries
+ *   GET  /api/v1/database/alerts               — Database performance alerts
+ *   GET  /api/v1/database/table-scans          — pg_stat_user_tables snapshot
+ *
+ *   — Read-replica routing (Issue #881) ——————————————————————————————————————
+ *   GET  /api/v1/database/replicas             — List replica health + routing stats
+ *   POST /api/v1/database/replicas/:url/disable— Disable a specific replica
+ *   POST /api/v1/database/replicas/:url/enable — Re-enable a specific replica
  */
 
 import { Router, Request, Response } from 'express';
@@ -19,6 +24,7 @@ import {
   indexRecommendationEngine,
   dbAlertManager,
   getQueryProfiler,
+  readReplicaRouter,
 } from '../config/database.js';
 import { getSlowQueryDashboard, resetQueryMetrics } from '../middleware/queryLogger.js';
 import { poolMetrics, connectionLeaseManager, poolExhaustionManager } from '../config/database.js';
@@ -89,6 +95,89 @@ router.post('/metrics/reset', async (_req: Request, res: Response) => {
   queryProfiler.reset();
   resetQueryMetrics();
   res.json({ data: { message: 'Query metrics reset' } });
+});
+
+// ── Read-replica routing endpoints — Issue #881 ───────────────────────────────
+
+/**
+ * GET /database/replicas
+ *
+ * Returns the health status and routing metadata for every configured
+ * read replica.  Includes the global router configuration (maxLagMs) and a
+ * per-replica breakdown.
+ */
+router.get('/replicas', (_req: Request, res: Response) => {
+  const replicas = readReplicaRouter.snapshot();
+  const healthy  = replicas.filter((r) => !r.disabled && r.health === 'healthy').length;
+
+  res.json({
+    data: {
+      total: replicas.length,
+      healthy,
+      unhealthy: replicas.filter((r) => r.health === 'unhealthy' && !r.disabled).length,
+      lagging:   replicas.filter((r) => r.health === 'lagging'   && !r.disabled).length,
+      disabled:  replicas.filter((r) => r.disabled).length,
+      replicas: replicas.map((r) => ({
+        url: r.url,
+        health: r.health,
+        lagMs: r.lagMs,
+        failureCount: r.failureCount,
+        disabled: r.disabled,
+        inCooldown: r.cooldownUntil > Date.now(),
+        cooldownUntil: r.cooldownUntil > 0 ? new Date(r.cooldownUntil).toISOString() : null,
+        lastCheckedAt: r.lastCheckedAt > 0 ? new Date(r.lastCheckedAt).toISOString() : null,
+      })),
+    },
+  });
+});
+
+/**
+ * POST /database/replicas/:url/disable
+ *
+ * Administratively removes a replica from the routing pool.  Useful for
+ * planned maintenance without restarting the app.
+ *
+ * The `:url` segment must be URL-encoded (e.g. encodeURIComponent(replicaUrl)).
+ */
+router.post('/replicas/:url/disable', (req: Request, res: Response) => {
+  const rawUrl = req.params['url'];
+  const url = decodeURIComponent(Array.isArray(rawUrl) ? rawUrl[0] ?? '' : (rawUrl ?? ''));
+  if (!url) {
+    res.status(400).json({ error: 'replica url is required' });
+    return;
+  }
+
+  const before = readReplicaRouter.snapshot().find((r) => r.url === url);
+  if (!before) {
+    res.status(404).json({ error: `Replica not found: ${url}` });
+    return;
+  }
+
+  readReplicaRouter.disableReplica(url);
+  res.json({ data: { url, disabled: true, message: 'Replica disabled — traffic will route to remaining healthy replicas or primary.' } });
+});
+
+/**
+ * POST /database/replicas/:url/enable
+ *
+ * Re-admits a previously disabled replica into the routing pool.
+ */
+router.post('/replicas/:url/enable', (req: Request, res: Response) => {
+  const rawUrl = req.params['url'];
+  const url = decodeURIComponent(Array.isArray(rawUrl) ? rawUrl[0] ?? '' : (rawUrl ?? ''));
+  if (!url) {
+    res.status(400).json({ error: 'replica url is required' });
+    return;
+  }
+
+  const before = readReplicaRouter.snapshot().find((r) => r.url === url);
+  if (!before) {
+    res.status(404).json({ error: `Replica not found: ${url}` });
+    return;
+  }
+
+  readReplicaRouter.enableReplica(url);
+  res.json({ data: { url, disabled: false, message: 'Replica enabled — will receive read traffic on the next health check cycle.' } });
 });
 
 export { router as databaseRouter };
